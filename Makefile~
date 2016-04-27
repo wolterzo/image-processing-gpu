@@ -1,0 +1,7 @@
+ROOT     := .
+TARGETS  := raytracer
+CFLAGS := `/home/curtsinger/bin/Magick-config --cflags` -g -O2--std=c++11 -I/home/curtsinger/include
+LDFLAGS := `/home/curtsinger/bin/Magick-config --ldflags --libs`
+
+
+include $(ROOT)/common.mk
