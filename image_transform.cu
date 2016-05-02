@@ -8,24 +8,32 @@ using namespace Magick;
 #define BLOCK_SIZE 32
 #define RANGE 256
 
-__global__ void image_to_grayscale(PixelPacket* packet) {
+typedef struct pixelRGB {
+  int r;
+  int g;
+  int b;
+} pixelRGB;
+
+__global__ void image_to_grayscale(pixelRGB* pixels) {
   //Below equation found here: http://www.mathworks.com/matlabcentral/answers/99136-how-do-i-convert-my-rgb-image-to-grayscale-without-using-the-image-processing-toolbox?
   //intensity = 0.2989*red + 0.5870*green + 0.1140*blue
   int index = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-  Color color = packet[index];
-  int intensity = ((0.2989 * color.redQuantum()) / RANGE) +
-    ((0.5870 * color.greenQuantum()) / RANGE) +
-    ((0.1140 * color.blueQuantum()) / RANGE);
-  packet[index] = Color(intensity, intensity, intensity);
+  pixelRGB color = pixels[index];
+  int intensity = (0.2989 * color.r) + (0.5870 * color.g) + (0.1140 * color.b);
+  pixels[index].r = intensity;
+  pixels[index].g = intensity;
+  pixels[index].b = intensity;
   
 }
 
 
 int main (int argc, char** argv) {
   InitializeMagick(*argv);
-
+  
+  printf("In main\n");
+  
   Image image;
-  string filename ("cat.jpg");
+  string filename ("bowtie.jpg");
   try {
     // Read a file into image object
     image.read(filename);
@@ -34,35 +42,59 @@ int main (int argc, char** argv) {
     cout << "Caught exception: " << error_.what() << endl;
     return 1;
   }
-  Pixels view(image);
-   *(view.get(108,94,1,1)) = Color("red");
-
    int width = image.columns();
    int height = image.rows();
-   //int range = 256;
+   printf("width: %d, height: %d\n", width, height);
    PixelPacket* cpu_packet = image.getPixels(0, 0, width, height);
+   pixelRGB cpu_pixels[width*height];
+   printf("Got pixels?\n");
+   
+   for (int i = 0; i < width; i++) {
+     for(int j = 0; j < height; j++) {
+       Color color = cpu_packet[j * width + i];
+       cpu_pixels[j* width + i].r = color.redQuantum() / RANGE;
+       cpu_pixels[j* width + i].g = color.greenQuantum() / RANGE;
+       cpu_pixels[j* width + i].b = color.blueQuantum() / RANGE;
+     }
+   }
+   
    
    // Color color = cpu_packet[0];
    // cout << (color.redQuantum() / range) << endl;
  
-   PixelPacket* gpu_packet;
-   if(cudaMalloc(&gpu_packet, sizeof(PixelPacket) * width * height) != cudaSuccess) {
+   pixelRGB* gpu_pixels;
+   if(cudaMalloc(&gpu_pixels, sizeof(pixelRGB) * width * height) != cudaSuccess) {
     fprintf(stderr, "Failed to create image for the gpu\n");
     exit(2);
   }
   
   //Copy contents from cpu to gpu
-   if(cudaMemcpy(gpu_packet, cpu_packet, sizeof(PixelPacket) *  width * height, cudaMemcpyHostToDevice) != cudaSuccess) {
+   if(cudaMemcpy(gpu_pixels, cpu_pixels, sizeof(pixelRGB) *  width * height, cudaMemcpyHostToDevice) != cudaSuccess) {
     fprintf(stderr, "Failed to copy image from CPU to the GPU\n");
       }
 
+   printf("Gottem\n");
+   
    int blocks = (width * height + BLOCK_SIZE - 1) / BLOCK_SIZE;
-   image_to_grayscale<<<blocks, BLOCK_SIZE>>>(gpu_packet);
+   image_to_grayscale<<<blocks, BLOCK_SIZE>>>(gpu_pixels);
 
    cudaError_t err = cudaDeviceSynchronize();
    if(err != cudaSuccess) {
      printf("\n%s\n", cudaGetErrorString(err));
      fprintf(stderr, "\nFailed to synchronize correctly\n");
+   }
+
+   if(cudaMemcpy(cpu_pixels, gpu_pixels, sizeof(pixelRGB) * width * height, cudaMemcpyDeviceToHost) != cudaSuccess) {
+     fprintf(stderr, "Failed to copy gpu pixels to host\n");
+   }
+
+    printf("they've returned\n");
+   
+   for (int i = 0; i < width; i++) {
+     for(int j = 0; j < height; j++) {
+       pixelRGB temp = cpu_pixels[j* width + i];
+       cpu_packet[j * width + i] = Color(temp.r, temp.g, temp.b);
+     }
    }
 
    image.syncPixels();
