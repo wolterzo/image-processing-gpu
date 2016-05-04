@@ -42,12 +42,12 @@ __global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pix
   //int mult = fWidth * fHeight;
   double filter[9] =
     {
-      1, 1, 1,
-      1,-7, 1,
-      1, 1, 1
+      -1, -1,  0,
+      -1,  0,  1,
+       0,  1,  1
     };
   double factor = 1;
-  double bias = 0;
+  double bias = 128;
 
   double red = 0;
   double green = 0;
@@ -62,7 +62,7 @@ __global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pix
       blue += input_pixels[imageY * w + imageX].b * filter[fY * fWidth+fX];
     }
   }
-  
+  // printf("In loop\n");
   output_pixels[index].r = min(max(int(factor * red + bias), 0), 255 * RANGE);
   output_pixels[index].g = min(max(int(factor * green + bias), 0), 255 * RANGE);
   output_pixels[index].b = min(max(int(factor * blue + bias), 0), 255 * RANGE);
@@ -73,13 +73,20 @@ int main (int argc, char** argv) {
   
   printf("In main\n");
   
-  string filename ("cat.jpg");
+  string filename ("bridge.jpg");
   Image image(filename);
 
   int width = image.columns();
   int height = image.rows();
+  // Rounds up number of iterations
+  int iterations = ((width * height) + (65535 * BLOCK_SIZE)) + / (65535 * BLOCK_SIZE));
+
+int modheight = height / iterations;
+//for last iterations
+//height - modheight * i;
+for (int i = 0; i < iterations; i++){
   image.modifyImage();
-  PixelPacket* cpu_packet = image.getPixels(0, 0, width, height);
+  PixelPacket* cpu_packet = image.getPixels(0, height+1, width, height);
   printf("width: %d, height: %d\n", width, height);
   pixelRGB* cpu_pixels;
   cpu_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * height);
@@ -152,7 +159,7 @@ int main (int argc, char** argv) {
     fprintf(stderr, "\nFailed to synchronize correctly\n");
   }
 
-  image_to_grayscale<<<blocks, BLOCK_SIZE>>>(result_pixels);
+  // image_to_grayscale<<<blocks, BLOCK_SIZE>>>(result_pixels);
   err = cudaDeviceSynchronize();
   if(err != cudaSuccess) {
     printf("\n%s\n", cudaGetErrorString(err));
@@ -173,7 +180,7 @@ int main (int argc, char** argv) {
   }
 
   image.syncPixels();
-
+ }
   image.write("filtered_" + filename);
   free(cpu_pixels);
   return 0;
