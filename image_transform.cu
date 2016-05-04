@@ -73,21 +73,29 @@ int main (int argc, char** argv) {
   
   printf("In main\n");
   
-  string filename ("bridge.jpg");
+  string filename ("barce.jpg");
   Image image(filename);
 
   int width = image.columns();
   int height = image.rows();
   // Rounds up number of iterations
-  int iterations = ((width * height) + (65535 * BLOCK_SIZE)) + / (65535 * BLOCK_SIZE));
-
-int modheight = height / iterations;
-//for last iterations
-//height - modheight * i;
+  int iterations = (((width * height) + (65535 * BLOCK_SIZE))-1) / (65535 * BLOCK_SIZE);
+  printf("number of iterations: %d\n", iterations);
+  int modheight = height / iterations;
+  int startheight = height / iterations;
+  float a = (width * height) / (65535 * BLOCK_SIZE);
+  printf("modheight is: %lf\n", a);//odheight);
+ 
 for (int i = 0; i < iterations; i++){
+  if (i == iterations-1){
+  int rm = height - (modheight * i);
+  modheight = modheight + rm;
+  printf("On last iteration!! modheight = %d\n", modheight);
+  }
   image.modifyImage();
-  PixelPacket* cpu_packet = image.getPixels(0, height+1, width, height);
+  PixelPacket* cpu_packet = image.getPixels(0, i * startheight, width, modheight-1);
   printf("width: %d, height: %d\n", width, height);
+  printf("start height: %d, end height: %d\n", i * startheight, modheight);
   pixelRGB* cpu_pixels;
   cpu_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * height);
   printf("Got pixels?\n");
@@ -180,8 +188,9 @@ for (int i = 0; i < iterations; i++){
   }
 
   image.syncPixels();
+  free(cpu_pixels);
  }
   image.write("filtered_" + filename);
-  free(cpu_pixels);
+  // free(cpu_pixels);
   return 0;
 }
