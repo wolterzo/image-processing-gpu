@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <Magick++.h>
 #include <iostream>
 #include <string>
@@ -74,6 +75,9 @@ int main (int argc, char** argv) {
   string filename = argv[1];//("bridge.jpg");
   Image image(filename);
 
+  //START TIMER
+  clock_t start = clock();
+  
   int width = image.columns();
   int height = image.rows();
   printf("width: %d, height: %d\n", width, height);
@@ -196,6 +200,14 @@ int main (int argc, char** argv) {
     free(cpu_pixels);
   }
   image.write("filtered_" + filename);
+
+  clock_t diff = clock() - start;
+  int msec = diff * 1000 / CLOCKS_PER_SEC;
+
+  FILE* timing = fopen("timing.csv", "a");
+  fprintf(timing, "%d,%d\n", width*height, msec);
+  fclose(timing);
+  
   // free(cpu_pixels);
   return 0;
 }
