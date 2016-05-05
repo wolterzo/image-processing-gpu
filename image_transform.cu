@@ -28,7 +28,7 @@ __global__ void image_to_grayscale(pixelRGB* pixels) {
   //printf("%d\n", pixels[index].r);
 }
 
-__global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pixels, int w, int h) {
+__global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pixels, int w, int h, double* filter, int fWidth, int fHeight, double factor, double bias) {
   int index = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   
   int x = index % w;
@@ -36,17 +36,6 @@ __global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pix
 
   
   // Looked at 'http://lodev.org/cgtutor/filtering.html' to figure out complexfilters
-  int fHeight = 3;
-  int fWidth = 3;
-  //int mult = fWidth * fHeight;
-  double filter[9] =
-    {
-      -1, -1,  0,
-      -1,  0,  1,
-       0,  1,  1
-    };
-  double factor = 1;
-  double bias = 128;
 
   double red = 0;
   double green = 0;
@@ -77,38 +66,98 @@ int main (int argc, char** argv) {
 
   //START TIMER
   clock_t start = clock();
+
+
+  //Filter
+  int fHeight = 9;
+  int fWidth = 9;
+
+  double cpu_filter[] =
+    {
+      1, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 1, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 1, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 1, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 1, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 1, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 1, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 1, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 1,
+    };
+    
+    // {
+    //   -1, -1,  0,
+    //   -1,  0,  1,
+    //    0,  1,  1
+    // };
+  double factor = 1.0 / 9.0;
+  double bias = 0.0;
+
+  double* gpu_filter;
+  if(cudaMalloc(&gpu_filter, sizeof(double) * fWidth* fHeight) != cudaSuccess) {
+    fprintf(stderr, "Failed to create filter matrix for the gpu\n");
+    exit(2);
+  }
+  
+  //Copy contents from cpu to gpu
+  if(cudaMemcpy(gpu_filter, cpu_filter, sizeof(double) * fWidth * fHeight, cudaMemcpyHostToDevice) != cudaSuccess) {
+    fprintf(stderr, "Failed to copy filter matrix from CPU to the GPU\n");
+  }
   
   int width = image.columns();
   int height = image.rows();
   printf("width: %d, height: %d\n", width, height);
   // Rounds up number of iterations
-  int iterations = (((width * height) + (65535 * BLOCK_SIZE))-1) / (65535 * BLOCK_SIZE);
+  int offset = fHeight / 2;
+  int iterations = (((width * (height + offset)) + (65535 * BLOCK_SIZE))-1) / (65535 * BLOCK_SIZE);
   printf("number of iterations: %d\n", iterations);
   int modheight = height / iterations;
   int startheight = height / iterations;
-  float a = (width * height) / (65535 * BLOCK_SIZE);
+  int modheight_plus;
+  int startheight_plus;
   printf("modheight is: %d\n", modheight);
- 
+  pixelRGB* master_pixels;
+  master_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * height);
+  
+  
   for (int i = 0; i < iterations; i++){
+    int iter = i;
     int remainder = height - (modheight * i);
     if (remainder < modheight && remainder != 0) {
       printf("i is %d\n", i);
       printf("rm is %d\n", remainder);
       modheight = remainder;
-      //   modheight++;
+
       printf("On last iteration!! modheight = %d\n", modheight);
     }
-          modheight--;
+
+    if(iterations == 1) {
+      startheight_plus = 0;
+      modheight_plus = modheight;
+    }
+    else if(iter == 0) {
+      startheight_plus = 0;
+      modheight_plus = modheight + offset;
+    } else if(iter == iterations - 1) {
+      startheight_plus = iter*startheight - offset;
+      modheight_plus = modheight + offset;
+    }
+    else {
+      startheight_plus =  iter*startheight - offset;
+      modheight_plus = modheight + 2 * offset;
+      printf("middle loop\n");
+    }
+    
     image.modifyImage();
     
-    PixelPacket* cpu_packet = image.getPixels(0, i * startheight, width, modheight);
-    printf("start height: %d, end height: %d\n", i * startheight, modheight);
+    PixelPacket* cpu_packet = image.getPixels(0, startheight_plus, width, modheight_plus);
+    printf("start height: %d, end height: %d\n", startheight_plus, modheight_plus);
     pixelRGB* cpu_pixels;
-    cpu_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * modheight);
+    cpu_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * modheight_plus);
     printf("Got pixels?\n");
    
     for (int i = 0; i < width; i++) {
-      for(int j = 0; j < modheight; j++) {
+      for(int j = 0; j < modheight_plus; j++) {
         Color color = cpu_packet[j * width + i];
         cpu_pixels[j* width + i].r = color.redQuantum();// / RANGE;
         cpu_pixels[j* width + i].g = color.greenQuantum();// / RANGE;
@@ -116,59 +165,35 @@ int main (int argc, char** argv) {
       }
     }
    
-   
-    // Color color = cpu_packet[0];
-    // cout << (color.redQuantum() / range) << endl;
+
  
     pixelRGB* gpu_pixels;
-    if(cudaMalloc(&gpu_pixels, sizeof(pixelRGB) * width * modheight) != cudaSuccess) {
+    if(cudaMalloc(&gpu_pixels, sizeof(pixelRGB) * width * modheight_plus) != cudaSuccess) {
       fprintf(stderr, "Failed to create image for the gpu\n");
       exit(2);
     }
   
     //Copy contents from cpu to gpu
-    if(cudaMemcpy(gpu_pixels, cpu_pixels, sizeof(pixelRGB) *  width * modheight, cudaMemcpyHostToDevice) != cudaSuccess) {
+    if(cudaMemcpy(gpu_pixels, cpu_pixels, sizeof(pixelRGB) *  width * modheight_plus, cudaMemcpyHostToDevice) != cudaSuccess) {
       fprintf(stderr, "Failed to copy image from CPU to the GPU\n");
     }
 
     printf("Gottem\n");
    
-    int blocks = (width * modheight + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    //image_to_grayscale<<<blocks, BLOCK_SIZE>>>(gpu_pixels);
-
     pixelRGB* result_pixels;
-    if(cudaMalloc(&result_pixels, sizeof(pixelRGB) * width * modheight) != cudaSuccess) {
+    if(cudaMalloc(&result_pixels, sizeof(pixelRGB) * width * modheight_plus) != cudaSuccess) {
       fprintf(stderr, "Failed to create image for the gpu\n");
       exit(2);
     }
   
     //Copy contents from cpu to gpu
-    if(cudaMemcpy(result_pixels, cpu_pixels, sizeof(pixelRGB) *  width * modheight, cudaMemcpyHostToDevice) != cudaSuccess) {
+    if(cudaMemcpy(result_pixels, cpu_pixels, sizeof(pixelRGB) *  width * modheight_plus, cudaMemcpyHostToDevice) != cudaSuccess) {
       fprintf(stderr, "Failed to copy image from CPU to the GPU\n");
     }
 
-    // int* gpu_width;
-    // int* gpu_height;
-    // if(cudaMalloc(&gpu_width, sizeof(int)) != cudaSuccess) {
-    //   fprintf(stderr, "Failed to create width for the gpu\n");
-    //   exit(2);
-    // }
-  
-    // //Copy contents from cpu to gpu
-    // if(cudaMemcpy(gpu_width, &width, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
-    //   fprintf(stderr, "Failed to copy width from CPU to the GPU\n");
-    // }
-    // if(cudaMalloc(&gpu_height, sizeof(int)) != cudaSuccess) {
-    //   fprintf(stderr, "Failed to create height for the gpu\n");
-    //   exit(2);
-    // }
-  
-    // //Copy contents from cpu to gpu
-    // if(cudaMemcpy(gpu_height, &height, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
-    //   fprintf(stderr, "Failed to copy width from CPU to the GPU\n");
-    // }
-    
-    matrix_filter_image<<<blocks, BLOCK_SIZE>>>(gpu_pixels, result_pixels, width, modheight);
+
+    int blocks = (width * modheight_plus + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    matrix_filter_image<<<blocks, BLOCK_SIZE>>>(gpu_pixels, result_pixels, width, modheight, gpu_filter, fWidth, fHeight, factor, bias);
     
     cudaError_t err = cudaDeviceSynchronize();
     if(err != cudaSuccess) {
@@ -176,29 +201,40 @@ int main (int argc, char** argv) {
       fprintf(stderr, "\nFailed to synchronize correctly\n");
     }
 
-    // image_to_grayscale<<<blocks, BLOCK_SIZE>>>(result_pixels);
-    err = cudaDeviceSynchronize();
-    if(err != cudaSuccess) {
-      printf("\n%s\n", cudaGetErrorString(err));
-      fprintf(stderr, "\nFailed to synchronize correctly\n");
-    }
-
-    if(cudaMemcpy(cpu_pixels, result_pixels, sizeof(pixelRGB) * width * modheight, cudaMemcpyDeviceToHost) != cudaSuccess) {
+    if(cudaMemcpy(cpu_pixels, result_pixels, sizeof(pixelRGB) * width * modheight_plus, cudaMemcpyDeviceToHost) != cudaSuccess) {
       fprintf(stderr, "Failed to copy gpu pixels to host\n");
     }
 
     printf("they've returned\n");
-   
-    for (int i = 0; i < width; i++) {
-      for(int j = 0; j < modheight; j++) {
-        pixelRGB temp = cpu_pixels[j* width + i];
-        cpu_packet[j * width + i] = Color(temp.r, temp.g, temp.b);
+
+    int row_start = 1;
+    if(iter == 0) {
+      row_start = 0;
+    }
+    
+    for (int i = row_start; i < modheight; i++) {
+      for(int j = 0; j < width; j++) {
+        int index = (startheight_plus * width) + (i*width) + j;
+        master_pixels[index] = cpu_pixels[i* width + j];
       }
     }
+    
 
-    image.syncPixels();
+    //image.syncPixels();
     free(cpu_pixels);
+    cudaFree(gpu_pixels);
+    cudaFree(result_pixels);
   }
+
+  PixelPacket* all_packets = image.getPixels(0, 0, width, height);
+  for (int i = 0; i < width; i++) {
+    for(int j = 0; j < height; j++) {
+      pixelRGB temp = master_pixels[j* width + i];
+      all_packets[j * width + i] = Color(temp.r, temp.g, temp.b);
+    }
+  }
+  
+  image.syncPixels();
   image.write("filtered_" + filename);
 
   clock_t diff = clock() - start;
