@@ -17,15 +17,12 @@ typedef struct pixelRGB {
 
 __global__ void image_to_grayscale(pixelRGB* pixels) {
   //Below equation found here: http://www.mathworks.com/matlabcentral/answers/99136-how-do-i-convert-my-rgb-image-to-grayscale-without-using-the-image-processing-toolbox?
-  //intensity = 0.2989*red + 0.5870*green + 0.1140*blue
   int index = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   pixelRGB color = pixels[index];
   double intensity = ((double) 0.2989 * color.r) + ((double) 0.5870 * color.g) + ((double) 0.1140 * color.b);
-  //printf("%lf\n", intensity);
   pixels[index].r = intensity;
   pixels[index].g = intensity;
   pixels[index].b = intensity;
-  //printf("%d\n", pixels[index].r);
 }
 
 __global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pixels, int w, int h, double* filter, int fWidth, int fHeight, double factor, double bias) {
@@ -58,10 +55,10 @@ __global__ void matrix_filter_image(pixelRGB* input_pixels, pixelRGB* output_pix
 
 int main (int argc, char** argv) {
   InitializeMagick(*argv);
-  
-  printf("In main\n");
-  
-  string filename = argv[1];//("bridge.jpg");
+
+  // get filename
+  string filename = argv[1];
+  // load file into image
   Image image(filename);
 
   //START TIMER
@@ -73,26 +70,43 @@ int main (int argc, char** argv) {
   int fWidth = 9;
 
   double cpu_filter[] =
-    {
-      1, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 1, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 1, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 1, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 1, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 1, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 1, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 1, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 1,
-    };
-    
+  {
+    1, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 1, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 1, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 1, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 1, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1,
+  };
     // {
-    //   -1, -1,  0,
-    //   -1,  0,  1,
-    //    0,  1,  1
+    //   -1, -1, -1, -1,  0,
+    //   -1, -1, -1,  0,  1,
+    //   -1, -1,  0,  1,  1,
+    //   -1,  0,  1,  1,  1,
+    //    0,  1,  1,  1,  1
     // };
+    // {
+    //   -1, -1, -1, -1, -1, -1, -1,
+    //   -1, -1, -1, -1, -1, -1, -1,
+    //   -1, -1, -1, -1, -1, -1, -1,
+    //   -1, -1, -1, 49, -1, -1, -1,
+    //   -1, -1, -1, -1, -1, -1, -1,
+    //   -1, -1, -1, -1, -1, -1, -1,
+    //   -1, -1, -1, -1, -1, -1, -1
+    // };
+    
+  // {
+  //   -1, -1,  0,
+  //   -1,  0,  1,
+  //    0,  1,  1
+  // };
   double factor = 1.0 / 9.0;
-  double bias = 0.0;
+  double bias = 1.0;
 
+  // Allocate and copy gpu_filter data
   double* gpu_filter;
   if(cudaMalloc(&gpu_filter, sizeof(double) * fWidth* fHeight) != cudaSuccess) {
     fprintf(stderr, "Failed to create filter matrix for the gpu\n");
@@ -106,67 +120,80 @@ int main (int argc, char** argv) {
   
   int width = image.columns();
   int height = image.rows();
-  printf("width: %d, height: %d\n", width, height);
   // Rounds up number of iterations
   int offset = fHeight / 2;
-  int iterations = (((width * (height + offset)) + (65535 * BLOCK_SIZE))-1) / (65535 * BLOCK_SIZE);
-  printf("number of iterations: %d\n", iterations);
+  int iterations = (((width * (height + 2*offset)) + (65535 * BLOCK_SIZE))-1) / (65535 * BLOCK_SIZE);
+
+  // find the height of the section
   int modheight = height / iterations;
-  int startheight = height / iterations;
+  int startheight = modheight;
+  
+  // heights for including offsets
   int modheight_plus;
   int startheight_plus;
-  printf("modheight is: %d\n", modheight);
+
+  // An array to store all pixel results
   pixelRGB* master_pixels;
   master_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * height);
   
-  
+  // Go through each section of the image
   for (int i = 0; i < iterations; i++){
     int iter = i;
+
+    // find remaining pixels
     int remainder = height - (modheight * i);
+    // if remaining is less than modheight, but not 0, change modheight
+    // last iteration
     if (remainder < modheight && remainder != 0) {
       printf("i is %d\n", i);
       printf("rm is %d\n", remainder);
       modheight = remainder;
-
-      printf("On last iteration!! modheight = %d\n", modheight);
     }
 
+    // calculate different heights
+
+    // if there's only one iteration
     if(iterations == 1) {
       startheight_plus = 0;
       modheight_plus = modheight;
     }
+    // if it's the first iteration, add 1 extra row
     else if(iter == 0) {
       startheight_plus = 0;
       modheight_plus = modheight + offset;
-    } else if(iter == iterations - 1) {
+    }
+    // if it's the last iteration, add 1 extra row
+    else if(iter == iterations - 1) {
       startheight_plus = iter*startheight - offset;
       modheight_plus = modheight + offset;
     }
+    // if it's a middle iteration, add 2 extra rows
     else {
       startheight_plus =  iter*startheight - offset;
       modheight_plus = modheight + 2 * offset;
-      printf("middle loop\n");
     }
     
     image.modifyImage();
-    
+
+    // get pixels from the image
     PixelPacket* cpu_packet = image.getPixels(0, startheight_plus, width, modheight_plus);
-    printf("start height: %d, end height: %d\n", startheight_plus, modheight_plus);
+
+    // allocate array of cpu pixels
     pixelRGB* cpu_pixels;
     cpu_pixels = (pixelRGB*) malloc(sizeof(pixelRGB) * width * modheight_plus);
-    printf("Got pixels?\n");
-   
+
+    // copy pixels from pixelpacket to pixelRGB
     for (int i = 0; i < width; i++) {
       for(int j = 0; j < modheight_plus; j++) {
         Color color = cpu_packet[j * width + i];
-        cpu_pixels[j* width + i].r = color.redQuantum();// / RANGE;
-        cpu_pixels[j* width + i].g = color.greenQuantum();// / RANGE;
-        cpu_pixels[j* width + i].b = color.blueQuantum();// / RANGE;
+        cpu_pixels[j* width + i].r = color.redQuantum();
+        cpu_pixels[j* width + i].g = color.greenQuantum();
+        cpu_pixels[j* width + i].b = color.blueQuantum();
       }
     }
    
 
- 
+    // Allocate and copy GPU pixels
     pixelRGB* gpu_pixels;
     if(cudaMalloc(&gpu_pixels, sizeof(pixelRGB) * width * modheight_plus) != cudaSuccess) {
       fprintf(stderr, "Failed to create image for the gpu\n");
@@ -178,8 +205,8 @@ int main (int argc, char** argv) {
       fprintf(stderr, "Failed to copy image from CPU to the GPU\n");
     }
 
-    printf("Gottem\n");
-   
+
+    // Allocate and copy array for result GPU pixels
     pixelRGB* result_pixels;
     if(cudaMalloc(&result_pixels, sizeof(pixelRGB) * width * modheight_plus) != cudaSuccess) {
       fprintf(stderr, "Failed to create image for the gpu\n");
@@ -191,9 +218,12 @@ int main (int argc, char** argv) {
       fprintf(stderr, "Failed to copy image from CPU to the GPU\n");
     }
 
-
-    int blocks = (width * modheight_plus + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    // calculate number of blocks
+    int blocks = (width * modheight + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    
+    // Run kernel!
     matrix_filter_image<<<blocks, BLOCK_SIZE>>>(gpu_pixels, result_pixels, width, modheight, gpu_filter, fWidth, fHeight, factor, bias);
+
     
     cudaError_t err = cudaDeviceSynchronize();
     if(err != cudaSuccess) {
@@ -201,12 +231,12 @@ int main (int argc, char** argv) {
       fprintf(stderr, "\nFailed to synchronize correctly\n");
     }
 
+    // Copy back pixels to CPU
     if(cudaMemcpy(cpu_pixels, result_pixels, sizeof(pixelRGB) * width * modheight_plus, cudaMemcpyDeviceToHost) != cudaSuccess) {
       fprintf(stderr, "Failed to copy gpu pixels to host\n");
     }
 
-    printf("they've returned\n");
-
+    // Copy back only pixels not in the offset
     int row_start = 1;
     if(iter == 0) {
       row_start = 0;
@@ -220,12 +250,13 @@ int main (int argc, char** argv) {
     }
     
 
-    //image.syncPixels();
+    // Free things!
     free(cpu_pixels);
     cudaFree(gpu_pixels);
     cudaFree(result_pixels);
   }
 
+  // Copy all pixel data back into PixelPacket
   PixelPacket* all_packets = image.getPixels(0, 0, width, height);
   for (int i = 0; i < width; i++) {
     for(int j = 0; j < height; j++) {
@@ -233,17 +264,22 @@ int main (int argc, char** argv) {
       all_packets[j * width + i] = Color(temp.r, temp.g, temp.b);
     }
   }
-  
+
+  // sync image
   image.syncPixels();
+
+  // write to new file
   image.write("filtered_" + filename);
 
+
+  // STOP TIMING
   clock_t diff = clock() - start;
   int msec = diff * 1000 / CLOCKS_PER_SEC;
 
+  // print into file
   FILE* timing = fopen("timing.csv", "a");
-  fprintf(timing, "%d,%d\n", width*height, msec);
+  fprintf(timing, "%d,%d,%d\n",fHeight, width*height, msec);
   fclose(timing);
   
-  // free(cpu_pixels);
   return 0;
 }
